@@ -1,0 +1,56 @@
+init:
+  ver: "3.2.3"
+
+roi:
+  roi_thresh: 500.0
+  
+prepare_for_vgg16:
+  thresh: {{logthresh}}
+#  thresh: 154.0
+
+compute_channel_mean:
+  num_to_sample: 4000
+  
+tsne_imgs:
+  # it is too slow to do tsne on the original images,
+  # pick a subset and resize them
+  num: 2000
+  resize: (100,100)
+  initial_dims: 50
+  perplexity: 30.0
+
+tsne_cws:
+  num: 2000
+  initial_dims: 50
+  perplexity: 30.0
+  
+train_on_codewords:
+  train_batchsize: {{batchsize}}
+  min_train_steps: 4000
+  #  min_epochs: 2
+  plateau_steps: 300
+  eval_steps: 100
+  train_report_steps: 20
+  var_init_stddev: 0.03
+  bias_init: 0.0
+  l2reg: {{l2reg}}
+  l1reg: {{l1reg}}
+  learning_rate: {{learning_rate}}
+  decay_learning_rate: True
+  learning_rate_decay_steps: 100
+  learning_rate_decay_rate: {{learning_rate_decay_rate}}
+  learning_rate_decay_staircase: True
+
+  optimizer: momentum
+  optimizer_param_momentum: {{optimizer_param_momentum}}
+  
+vgg16_output:
+  num_samples: 2000
+
+neurons:
+  topn: 2
+
+gbprop:
+  layer_from: 'pool5'  # would like to implement 'fc2', 'fc1', 'pool5'
+  images_per_label: 10
+  
