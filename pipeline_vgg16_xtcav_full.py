@@ -23,7 +23,7 @@ import time
 import jinja2
 
 ############### for xvalidation and hyper-parameter selection #####################
-def generate_config_file(output, seed=None, force=False, template='vgg16_xtcav.config.yaml.tmpl'):
+def old_generate_config_file(output, seed=None, force=False, template='vgg16_xtcav.config.yaml.tmpl'):
     assert os.path.exists(template), "template file: %s doesn't exist, use template arg to specify" % template
     assert not os.path.exists(output) or force, "config file: %s exists, use force to overwrite, or delete it" % output
     template = jinja2.Environment(loader=jinja2.FileSystemLoader('.')).get_template(template)
@@ -31,6 +31,29 @@ def generate_config_file(output, seed=None, force=False, template='vgg16_xtcav.c
     hyper_params = {
         'logthresh':[100,200,300,400,500,800],
         'batchsize':[16,32,64,128,256],
+        'l1reg':[5,1,.5,.1,.05,.01,.005,.001,.0005,.0001,.00005,.00001],
+        'l2reg':[5,1,.5,.1,.05,.01,.005,.001,.0005,.0001,.00005,.00001],
+        'learning_rate':[1,.5,.1,.05,.01,.005,.001,.0005,.0001],
+        'learning_rate_decay_rate':[1.0, 0.9999, 0.999, 0.99],
+        'optimizer_param_momentum':[0.0, 0.5, 0.75, 0.8, 0.83, 0.86, 0.9, 0.92, 0.95],
+        }
+
+    args = {}
+    for ky, vallist in hyper_params.iteritems():
+        idx = random.randint(0, len(vallist)-1)
+        args[ky]=vallist[idx]
+    fout = file(output,'w')
+    fout.write(template.render(args))
+    fout.close()
+    
+def generate_config_file(output, seed=None, force=False, template='vgg16_xtcav.config.yaml.tmpl'):
+    assert os.path.exists(template), "template file: %s doesn't exist, use template arg to specify" % template
+    assert not os.path.exists(output) or force, "config file: %s exists, use force to overwrite, or delete it" % output
+    template = jinja2.Environment(loader=jinja2.FileSystemLoader('.')).get_template(template)
+
+    hyper_params = {
+        'logthresh':[100,150,200,250,300],
+        'batchsize':[256,512,1024,2048],
         'l1reg':[5,1,.5,.1,.05,.01,.005,.001,.0005,.0001,.00005,.00001],
         'l2reg':[5,1,.5,.1,.05,.01,.005,.001,.0005,.0001,.00005,.00001],
         'learning_rate':[1,.5,.1,.05,.01,.005,.001,.0005,.0001],
@@ -116,7 +139,9 @@ class XtcavVgg16Full(object):
         util.logTrace('prepare_for_vgg16', 'thresh=%.1f' % thresh)
         util.inplace_log_thresh(prep_img, thresh)
         prep_resized = imresize(prep_img,(224,224), interp='lanczos', mode='F')
-        
+        # TODO: add this, probably why thresholds above 200 failed
+        # scale the image so that the log thresh is 200, since vgg16 expected[0,256] for images
+#        prep_resized *= 200.0/thresh
         if channel_mean: prep_resized -= channel_mean
         rgb = util.replicate(prep_resized, num_channels=3, dtype=np.float32)
         return rgb
@@ -315,12 +340,54 @@ class XtcavVgg16Full(object):
                 images = np.empty(shape=tuple(shape), dtype=img.dtype)
             images[ii,:] = img[:]
         return images
+
+    def relevance_propagation(self, config, pipeline, step2h5list, output_files):
+        model = self.model(pipeline, step2h5list, restore=True)
+        imgprep_config = pipeline.get_config('prepare_for_vgg16')
+        channel_mean = self.get_datastat('channel_mean',step2h5list)
+        W,B = model.get_W_B(pipeline.session)
+        # use the training and validation, but no the test file, for this ([0:2])
+        h5files = step2h5list['compute_vgg16_codewords'][0:2]
+        dataiter = self.dset.iter_from(h5files=h5files,
+                                       X=['codewords'], Y=['Y'],
+                                       batchsize=1,
+                                       epochs=1)
+        dataiter.shuffle()
+        
+        samples_meta = []
+        samples_label = []
+        layer_names = ['fc2','fc1','pool5','pool4','pool3','pool2','pool1']
+        for Xlist, Ylist, meta, batchinfo in dataiter:
+            sample = batchinfo['batch']
+            X=Xlist[0]
+            Y=Ylist[0]
+            logits = np.matmul(X,W)+B
+            predicted = np.argmax(logits)
+            label = np.argmax(Y)
+            if predicted != label:
+                pipeline.debug("vgg16_output: skipping sample %d, misclassified" % sample, checkcache=False)
+                continue
+            if predicted != 3:
+                pipeline.debug("vgg16_output: skipping sample %d, not 3" % sample, checkcache=False)
+                continue
+            prep_img = self.get_image(meta, step2h5list, do_vgg_prep=True)
+            batch_img = np.reshape(prep_img, [1]+list(prep_img.shape))
+            layers = self.vgg16().get_model_layers(sess=pipeline.session,
+                                                   imgs=batch_img,
+                                                   layer_names=layer_names)
+            # this line for interactive use
+            fc2,fc1,pool5,pool4,pool3,pool2,pool1=layers
+
+            import IPython
+            IPython.embed()
+            1/0
     
     def vgg16_output(self, config, pipeline, step2h5list, output_files):
         model = self.model(pipeline, step2h5list, restore=True)
         imgprep_config = pipeline.get_config('prepare_for_vgg16')
         channel_mean = self.get_datastat('channel_mean',step2h5list)
         W,B = model.get_W_B(pipeline.session)
+        # use the training and validation, but no the test file, for this ([0:2])
         h5files = step2h5list['compute_vgg16_codewords'][0:2]
         dataiter = self.dset.iter_from(h5files=h5files,
                                        X=['codewords'], Y=['Y'],
@@ -354,10 +421,13 @@ class XtcavVgg16Full(object):
             samples_meta.append(meta)
             samples_label.append(label)
             prep_img = self.get_image(meta, step2h5list, do_vgg_prep=True)
-            prep_img = np.reshape(prep_img, [1]+list(prep_img.shape))
+            batch_img = np.reshape(prep_img, [1]+list(prep_img.shape))
             layers = self.vgg16().get_model_layers(sess=pipeline.session,
-                                                   imgs=prep_img,
+                                                   imgs=batch_img,
                                                    layer_names=layer_names)
+            # this line for interactive use
+            fc2,fc1,pool5,pool4,pool3,pool2,pool1=layers
+
             for nm, vgg16_output in zip(layer_names, layers):
                 layer_vgg16_output[nm].append(vgg16_output)
             vgg_time=time.time()-t0
@@ -491,6 +561,7 @@ def run(argv, comm=None, sess=None):
                              output_files=['_train','_validation','_test'])
     pipeline.add_step_method(name='tsne_on_vgg16_codewords')
     pipeline.add_step_method(name='train_on_codewords')
+    pipeline.add_step_method(name='relevance_propagation')
     if False:
         pipeline.add_step_method(name='vgg16_output')
         pipeline.add_step_method(name='neurons')
